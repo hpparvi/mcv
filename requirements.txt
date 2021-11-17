@@ -1,0 +1,12 @@
+astropy
+numpy
+pytransit
+uncertainties
+dataclasses
+pandas
+etta
+ldtk
+matplotlib
+semantic_version
+seaborn
+setuptools
