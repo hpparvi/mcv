@@ -36,7 +36,7 @@ from uncertainties import ufloat
 
 from .io.muscat2 import read_m2_data
 from .io.photometry import Photometry
-from .io.tess import read_tess_data
+from .io.tess import read_tess
 from .plotting import _jplot
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
@@ -60,7 +60,7 @@ class Star:
     z: ufloat
 
     @staticmethod
-    def from_toi(toi):
+    def from_toi(toi: TOI):
         from astroquery.mast import Catalogs
         tb = Catalogs.query_object(f"TIC {toi.tic}", radius=.002, catalog="TIC")[0]
         radius = ufloat(*tb['rad e_rad'.split()])
@@ -74,17 +74,18 @@ class Star:
 
 
 class MCVLPF(BaseTGCLPF):
-    def __init__(self, toi: float, star: Optional[Star] = None,
+    def __init__(self, toi: float, star: Optional[Star] = None, split_transits: bool = False,
                  zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None,
                  use_ldtk: bool = True, use_opencl: bool = False, use_pdc: bool = True,
                  heavy_baseline: bool = False, downsample: Optional[float] = None,
                  m2_passbands: Iterable = ('g', 'r', 'i', 'z_s')):
 
         name = f"TOI-{toi}"
-        self.toi = toi = get_toi(toi)
-        self.zero_epoch = zero_epoch or toi.epoch
-        self.period = period or toi.period
+        self.toi: TOI = get_toi(toi)
+        self.zero_epoch = zero_epoch or self.toi.epoch
+        self.period = period or self.toi.period
         self.star = star or Star.from_toi(self.toi)
+        self.split_transits = split_transits
 
         self.use_pdc = use_pdc
         self.use_opencl = use_opencl
@@ -105,7 +106,7 @@ class MCVLPF(BaseTGCLPF):
 
         self.wns = wns
         PhysContLPF.__init__(self, name, passbands=pbnames, times=times, fluxes=fluxes, pbids=pbids, wnids=wnids,
-                             covariates=covs, tref=tref, tm=tm, nsamples=self.data.nsamples, exptimes=self.data.exptimes)
+                             covariates=covs, tref=tref, tm=tm, nsamples=self.data.nsamples, exptimes=self.data.exptime)
 
         if use_ldtk:
             self.set_ldtk_priors()
@@ -114,18 +115,19 @@ class MCVLPF(BaseTGCLPF):
     def read_data(self):
         ddata = Path('photometry')
         dtess = ddata/'tess'
-        tess_files = sorted(dtess.glob('*.fits'))
         dm2 = ddata/'m2'
         m2_files = sorted(dm2.glob('*.fits'))
-        dtess = read_tess_data(tess_files, self.zero_epoch.n, self.period.n, baseline_duration_d=0.3, use_pdc=self.use_pdc)
+        dtess = read_tess(self.toi.tic, dtess, split_transits=self.split_transits, use_pdc=self.use_pdc,
+                          zero_epoch=self.zero_epoch.n, period=self.period.n, depth=self.toi.depth.n*1e-6,
+                          transit_duration=self.toi.duration.n/24, baseline_duration=4*self.toi.duration.n/24)
         dm2 = read_m2_data(m2_files, downsample=self.downsample, passbands=self.m2_passbands, heavy_baseline=self.heavy_baseline)
         pbnames = 'tess g r i z_s'.split()
-        self._stess = len(dtess.times)
-        self._ntess = sum([t.size for t in dtess.times])
+        self._stess = len(dtess.time)
+        self._ntess = sum([t.size for t in dtess.time])
         self.data = data = dtess + dm2
-        data.fluxes = [f / median(f) for f in data.fluxes]
+        data.fluxes = [f / median(f) for f in data.flux]
         data.covariates = [(c-c.mean(0)) / c.std(0) for c in data.covariates]
-        return data.times, data.fluxes, pbnames, data.passbands, data.noise, data.covariates
+        return data.time, data.flux, pbnames, data.passband, data.noise, data.covariates
 
     def _init_instrument(self):
         """Set up the instrument and contamination model."""

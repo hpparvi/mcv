@@ -4,17 +4,19 @@ from typing import List
 
 @dataclass
 class Photometry:
-    times: List
-    fluxes: List
-    covariates: List
-    passbands: List
-    noise: List
-    instrument: List
-    piis: List
-    exptimes: List
-    nsamples: List
+    time: List           # List of time arrays
+    flux: List          # List of flux arrays
+    covariates: List      # List of covariate arrays
+    passband: List       # Passband per light curve
+    noise: List           # White noise estimate per light curve
+    instrument: List      # Instrument name per light curve
+    sector: List          # Sector or similar id per light curve
+    segment: List         # Segment id per light curve
+    exptime: List        # Exposure time per light curve
+    nsamples: List        # Number of supersamples per light curve
 
     def __add__(self, other):
-        return Photometry(self.times+other.times, self.fluxes+other.fluxes, self.covariates+other.covariates,
-                          self.passbands+other.passbands, self.noise+other.noise, self.instrument+other.instrument,
-                          self.piis+other.piis, self.exptimes+other.exptimes, self.nsamples+other.nsamples)
+        return Photometry(self.time+other.time, self.flux+other.flux, self.covariates+other.covariates,
+                          self.passband+other.passband, self.noise+other.noise, self.instrument+other.instrument,
+                          self.sector+other.sector, self.segment+other.segment,
+                          self.exptime+other.exptime, self.nsamples+other.nsamples)

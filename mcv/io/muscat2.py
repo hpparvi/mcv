@@ -4,7 +4,7 @@ from astropy.table import Table
 from numpy import isfinite, array, arange
 from pytransit.utils import downsample_time_1d, downsample_time_2d
 
-from mcv.io.photometry import Photometry
+from .photometry import Photometry
 
 
 def read_m2_data(files, downsample=None, passbands=('g', 'r', 'i', 'z_s'), heavy_baseline: bool = True):
@@ -39,7 +39,8 @@ def read_m2_data(files, downsample=None, passbands=('g', 'r', 'i', 'z_s'), heavy
     if not heavy_baseline:
         covs = len(times) * [array([[]])]
     ins = len(times)*["M2"]
-    piis = list(arange(len(times)))
+    sector = len(times)*[0]
+    segment = list(arange(len(times)))
     exptimes = len(times)*[0.0]
     nsamples = len(times)*[1]
-    return Photometry(times, fluxes, covs, pbs, wns, ins, piis, exptimes, nsamples)
+    return Photometry(times, fluxes, covs, pbs, wns, ins, sector, segment, exptimes, nsamples)
