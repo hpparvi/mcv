@@ -28,6 +28,7 @@ from numpy import arange, zeros, concatenate, sqrt, ndarray, inf, atleast_2d, su
 from pytransit import sdss_g, sdss_r, sdss_i, sdss_z, RoadRunnerModel
 from pytransit.contamination import Instrument, SMContamination
 from pytransit.lpf.cntlpf import contaminate, PhysContLPF
+from pytransit.lpf.loglikelihood import WNLogLikelihood, CeleriteLogLikelihood
 from pytransit.lpf.tess.tgclpf import BaseTGCLPF
 from pytransit.lpf.tesslpf import downsample_time
 from pytransit.orbits import as_from_rhop, i_from_ba
@@ -76,7 +77,7 @@ class Star:
 class MCVLPF(BaseTGCLPF):
     def __init__(self, toi: float, star: Optional[Star] = None, split_transits: bool = False,
                  zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None,
-                 use_ldtk: bool = True, use_opencl: bool = False, use_pdc: bool = True,
+                 use_gp: bool = True, use_ldtk: bool = True, use_opencl: bool = False, use_pdc: bool = True,
                  heavy_baseline: bool = False, downsample: Optional[float] = None,
                  m2_passbands: Iterable = ('g', 'r', 'i', 'z_s')):
 
@@ -87,6 +88,7 @@ class MCVLPF(BaseTGCLPF):
         self.star = star or Star.from_toi(self.toi)
         self.split_transits = split_transits
 
+        self.use_gp = use_gp
         self.use_pdc = use_pdc
         self.use_opencl = use_opencl
         self.heavy_baseline = heavy_baseline
@@ -135,6 +137,13 @@ class MCVLPF(BaseTGCLPF):
         self.cm = SMContamination(self.instrument, "i'")
         self.add_prior(lambda pv: where(pv[:, 4] < pv[:, 5], 0, -inf))
         self.add_prior(lambda pv: where(pv[:, 8] < pv[:, 5], 0, -inf))
+
+    def _init_lnlikelihood(self):
+        if self.use_gp:
+            self._add_lnlikelihood_model(CeleriteLogLikelihood(self, noise_ids=self.noise_ids[:self._stess]))
+            self._add_lnlikelihood_model(WNLogLikelihood(self, noise_ids=self.noise_ids[self._stess:]))
+        else:
+            self._add_lnlikelihood_model(WNLogLikelihood(self))
 
     def _post_initialisation(self):
         if self.use_opencl:
