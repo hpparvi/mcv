@@ -35,9 +35,7 @@ from pytransit.orbits import as_from_rhop, i_from_ba
 from pytransit.utils.misc import fold
 from uncertainties import ufloat
 
-from .io.muscat2 import read_m2_data
-from .io.photometry import Photometry
-from .io.tess import read_tess
+from .io import Photometry, read_tess, read_m2, read_lco, read_m3
 from .plotting import _jplot
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
@@ -75,61 +73,68 @@ class Star:
 
 
 class MCVLPF(BaseTGCLPF):
-    def __init__(self, toi: float, star: Optional[Star] = None, split_transits: bool = False,
+    def __init__(self, toi: float, star: Optional[Star] = None,
                  zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None,
-                 use_gp: bool = True, use_ldtk: bool = True, use_opencl: bool = False, use_pdc: bool = True,
-                 heavy_baseline: bool = False, downsample: Optional[float] = None,
-                 m2_passbands: Iterable = ('g', 'r', 'i', 'z_s')):
+                 use_gp: bool = True, use_ldtk: bool = True, use_opencl: bool = False):
 
-        name = f"TOI-{toi}"
+        self.name = f"TOI-{toi}"
         self.toi: TOI = get_toi(toi)
         self.zero_epoch = zero_epoch or self.toi.epoch
         self.period = period or self.toi.period
         self.star = star or Star.from_toi(self.toi)
-        self.split_transits = split_transits
 
-        self.use_gp = use_gp
-        self.use_pdc = use_pdc
-        self.use_opencl = use_opencl
-        self.heavy_baseline = heavy_baseline
-        self.downsample = downsample
-        self.m2_passbands = m2_passbands
-        tm = RoadRunnerModel('power-2-pm', small_planet_limit=0.005, parallel=True)
+        self.use_gp: bool = use_gp
+        self.use_opencl: bool = use_opencl
+        self.use_ldtk: bool = use_ldtk
 
-        self.result_dir = Path('.')
+        self.data: Optional[Photometry] = Photometry([], [], [], [], [], [], [], [], [], [])
         self._stess = None
         self._ntess = None
-        self.data: Optional[Photometry] = None
+        self._setup_finished: bool = False
 
-        times, fluxes, pbnames, pbs, wns, covs = self.read_data()
-        pbids = pd.Categorical(pbs, categories=pbnames).codes
-        wnids = arange(len(times))
-        tref = floor(concatenate(times).min())
+    def finish_setup(self):
+        data = self.data
+        data.flux = [f / median(f) for f in data.flux]
+        data.covariates = [(c-c.mean(0)) / c.std(0) for c in data.covariates]
+        pbnames = 'tess g r i z_s'.split()
 
-        self.wns = wns
-        PhysContLPF.__init__(self, name, passbands=pbnames, times=times, fluxes=fluxes, pbids=pbids, wnids=wnids,
-                             covariates=covs, tref=tref, tm=tm, nsamples=self.data.nsamples, exptimes=self.data.exptime)
+        pbids = pd.Categorical(data.passband, categories=pbnames).codes
+        wnids = arange(len(data.time))
+        tref = floor(concatenate(data.time).min())
 
-        if use_ldtk:
+        self.wns = data.noise
+        tm = RoadRunnerModel('power-2-pm', small_planet_limit=0.005, parallel=True)
+        PhysContLPF.__init__(self, self.name, passbands=pbnames, times=data.time, fluxes=data.flux, pbids=pbids, wnids=wnids,
+                             covariates=data.covariates, tref=tref, tm=tm, nsamples=self.data.nsamples, exptimes=self.data.exptime,
+                             result_dir=Path('.'))
+
+        if self.use_ldtk:
             self.set_ldtk_priors()
 
-
-    def read_data(self):
-        ddata = Path('photometry')
-        dtess = ddata/'tess'
-        dm2 = ddata/'m2'
-        m2_files = sorted(dm2.glob('*.fits'))
-        dtess = read_tess(self.toi.tic, dtess, split_transits=self.split_transits, use_pdc=self.use_pdc,
+    def read_tess(self, datadir: Optional[Path] = None, split_transits: bool = False, use_pdc: bool = True):
+        if not datadir:
+            datadir = Path('photometry/tess')
+        dtess = read_tess(self.toi.tic, datadir, split_transits=split_transits, use_pdc=use_pdc,
                           zero_epoch=self.zero_epoch.n, period=self.period.n, depth=self.toi.depth.n*1e-6,
                           transit_duration=self.toi.duration.n/24, baseline_duration=4*self.toi.duration.n/24)
-        dm2 = read_m2_data(m2_files, downsample=self.downsample, passbands=self.m2_passbands, heavy_baseline=self.heavy_baseline)
-        pbnames = 'tess g r i z_s'.split()
         self._stess = len(dtess.time)
         self._ntess = sum([t.size for t in dtess.time])
-        self.data = data = dtess + dm2
-        data.fluxes = [f / median(f) for f in data.flux]
-        data.covariates = [(c-c.mean(0)) / c.std(0) for c in data.covariates]
-        return data.time, data.flux, pbnames, data.passband, data.noise, data.covariates
+        self.data += dtess
+
+    def read_m2(self, datadir: Optional[Path] = None, heavy_baseline: bool = False,
+                downsample: Optional[float] = None, passbands: Iterable = ('g', 'r', 'i', 'z_s')):
+        if not datadir:
+            datadir = Path('photometry/m2')
+        files = sorted(datadir.glob('*.fits'))
+        self.data += read_m2(files, downsample=downsample, passbands=passbands, heavy_baseline=heavy_baseline)
+
+    def read_m3(self, datadir: Optional[Path] = None, heavy_baseline: bool = False):
+        if not datadir:
+            datadir = Path('photometry/lco')
+        self.data += read_m3(datadir, heavy_baseline=heavy_baseline)
+
+    def read_lco_file(self, fname: Path, passband: str, instrument: str):
+        self.data += read_lco(fname, passband, instrument)
 
     def _init_instrument(self):
         """Set up the instrument and contamination model."""

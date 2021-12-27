@@ -7,7 +7,7 @@ from pytransit.utils import downsample_time_1d, downsample_time_2d
 from .photometry import Photometry
 
 
-def read_m2_data(files, downsample=None, passbands=('g', 'r', 'i', 'z_s'), heavy_baseline: bool = True):
+def read_m2(files, downsample=None, passbands=('g', 'r', 'i', 'z_s'), heavy_baseline: bool = True):
     times, fluxes, pbs, wns, covs = [], [], [], [], []
     for inight, f in enumerate(files):
         with pf.open(f) as hdul:
