@@ -24,14 +24,17 @@ import etta
 
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp
-from numpy import arange, zeros, concatenate, sqrt, ndarray, inf, atleast_2d, sum, median, where, floor, squeeze, argsort, isnan
+from numpy import arange, zeros, concatenate, sqrt, ndarray, inf, atleast_2d, sum, median, where, floor, squeeze, \
+    argsort, isnan, repeat
+from numpy.random import uniform
 from pytransit import sdss_g, sdss_r, sdss_i, sdss_z, RoadRunnerModel
 from pytransit.contamination import Instrument, SMContamination
 from pytransit.lpf.cntlpf import contaminate, PhysContLPF
 from pytransit.lpf.loglikelihood import WNLogLikelihood, CeleriteLogLikelihood
 from pytransit.lpf.tess.tgclpf import BaseTGCLPF
 from pytransit.lpf.tesslpf import downsample_time
-from pytransit.orbits import as_from_rhop, i_from_ba
+from pytransit.orbits import as_from_rhop, i_from_ba, i_from_baew, d_from_pkaiews
+from pytransit.param import PParameter, GParameter, UniformPrior as UP, NormalPrior as NP
 from pytransit.utils.misc import fold
 from uncertainties import ufloat
 
@@ -140,8 +143,21 @@ class MCVLPF(BaseTGCLPF):
         """Set up the instrument and contamination model."""
         self.instrument = Instrument('example', [sdss_g, sdss_r, sdss_i, sdss_z])
         self.cm = SMContamination(self.instrument, "i'")
-        self.add_prior(lambda pv: where(pv[:, 4] < pv[:, 5], 0, -inf))
-        self.add_prior(lambda pv: where(pv[:, 8] < pv[:, 5], 0, -inf))
+
+    def _init_p_planet(self):
+        ps = self.ps
+        pk2 = [PParameter('k2_true', 'apparent_area_ratio', 'A_s', UP(0.01**2, 0.30**2), (0., inf))]
+        pcn = [GParameter('cnt_ref', 'reference_passband_contamination', '', UP(0.0, 1.0), bounds=(0.0, 1.0)),
+               GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+               GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+               GParameter('cnt_tess', 'tess_acontamination', '', UP(0.0, 1.), (0.0, 1.0))]
+        ps.add_passband_block('k2', 1, 1, pk2)
+        self._pid_k2 = repeat(ps.blocks[-1].start, self.npb)
+        self._start_k2 = ps.blocks[-1].start
+        self._sl_k2 = ps.blocks[-1].slice
+        ps.add_global_block('contamination', pcn)
+        self._pid_cn = arange(ps.blocks[-1].start, ps.blocks[-1].stop)
+        self._sl_cn = ps.blocks[-1].slice
 
     def _init_lnlikelihood(self):
         if self.use_gp:
@@ -156,11 +172,24 @@ class MCVLPF(BaseTGCLPF):
         self.set_prior('tc', 'NP', self.zero_epoch.n, 2*self.zero_epoch.s)
         self.set_prior('p', 'NP', self.period.n, 2*self.period.s)
         self.set_prior('rho', 'UP', 1, 35)
-        self.set_prior('k2_app', 'UP', round(0.5*self.toi.depth.n*1e-6, 5), round(1.5*self.toi.depth.n*1e-6, 5))
-        self.set_prior('k2_true', 'UP', 0.02 ** 2, 0.95 ** 2)
-        self.set_prior('k2_app_tess', 'UP', round(0.5*self.toi.depth.n*1e-6, 5), round(1.5*self.toi.depth.n*1e-6, 5))
+        self.set_prior('k2_true', 'UP', round(0.5*self.toi.depth.n*1e-6, 5), round(1.5*self.toi.depth.n*1e-6, 5))
         self.set_prior('teff_h', 'NP', self.star.teff.n, self.star.teff.s)
         self.set_prior('teff_c', 'UP', 2500, 12000)
+
+    def optimize_global(self, niter: int = 200, npop: int = 100, population = None):
+        p = self.ps[6].prior
+        self.set_prior('cnt_ref', 'NP', 0.03, 0.0025)
+        self.set_prior('cnt_tess', 'NP', 0.03, 0.0025)
+        self.set_prior('teff_c', 'NP', p.mean, p.std)
+        super().optimize_global(niter, npop, population=population)
+
+    def sample_mcmc(self, niter: int = 500, thin: int = 5, repeats: int = 1, npop: int = None,
+                    population=None, save: bool = False):
+        self.set_prior('cnt_ref', 'UP', 0.0, 1.0)
+        self.set_prior('cnt_tess', 'UP', 0.0, 1.0)
+        self.set_prior('teff_c', 'UP', 2500.0, 12000.0)
+        self.set_prior('k2_true', 'UP', 0.01 ** 2, 1.0)
+        super().sample_mcmc(niter, thin, repeats, npop=npop, population=population, save=save)
 
     def set_ldtk_priors(self):
         from ldtk import tess, sdss_g, sdss_r, sdss_i, sdss_z
@@ -174,7 +203,10 @@ class MCVLPF(BaseTGCLPF):
             self.set_prior(p.name, 'NP', round(ldc.flat[i], 5), round(lde.flat[i], 5))
 
     def create_pv_population(self, npv: int = 50) -> ndarray:
-        pvp = super().create_pv_population(npv)
+        pvp = self.ps.sample_from_prior(npv)
+        pvp[:, 5] = uniform(0.0, 0.1, size=npv)
+        pvp[:, 8] = uniform(0.0, 0.1, size=npv)
+        pvp[:, 7] = pvp[:, 6]
         for p in self.ps[self._sl_lm]:
             if 'lm_i' in p.name:
                 pvp[:, p.pid] = 0.01 * (pvp[:, p.pid] - 1.0) + 1.0
@@ -189,13 +221,23 @@ class MCVLPF(BaseTGCLPF):
         period = pvp[:,1]
         smaxis = as_from_rhop(pvp[:, 2], period)
         inclination  = i_from_ba(pvp[:, 3], smaxis)
-        radius_ratio = sqrt(pvp[:,5:6])
+        radius_ratio = sqrt(pvp[:,4:5])
         ldc = pvp[:, self._sl_ld].reshape([-1, self.npb, 2])
         flux = self.tm.evaluate(radius_ratio, ldc, zero_epoch, period, smaxis, inclination)
-        cnt[:, 0] = 1 - pvp[:, 8] / pvp[:, 5]
-        cnref = 1. - pvp[:, 4] / pvp[:, 5]
-        cnt[:, 1:] = self.cm.contamination(cnref, pvp[:, 6], pvp[:, 7])
+        cnt[:, 0] = pvp[:, 8]
+        cnt[:, 1:] = self.cm.contamination(pvp[:, 5], pvp[:, 6], pvp[:, 7])
         return contaminate(flux, cnt, self.lcids, self.pbids)
+
+    def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True):
+        df = super().posterior_samples(burn, thin, False)
+        if derived_parameters:
+            df['a'] = as_from_rhop(df.rho.values, df.p.values)
+            df['inc'] = i_from_baew(df.b.values, df.a.values, 0., 0.)
+            df['t14'] = d_from_pkaiews(df.p.values, df.k_true.values, df.a.values, df.inc.values, 0., 0., 1)
+            df['k_true'] = sqrt(df.k2_true)
+            df['k2_app'] = df.k2_true * (1 - df.cnt_ref)
+            df['k_app'] = sqrt(df.k2_app)
+        return df
 
     def plot_folded_tess_transit(self, solution: str = 'de', pv: ndarray = None, binwidth: float = 1,
                                  plot_model: bool = True, plot_unbinned: bool = True, plot_binned: bool = True,
@@ -240,13 +282,12 @@ class MCVLPF(BaseTGCLPF):
             fig.tight_layout()
         return fig
 
-
     def plot_joint_marginals(self, figsize=None, nb=30, gs=25, with_contamination=False, **kwargs):
-        df = self.posterior_samples()
+        df = self.posterior_samples(derived_parameters=True)
         if with_contamination:
             xlabels = ['$\Delta$ T$_\mathrm{Eff}$ [K]', 'Apparent radius ratio', 'Ref. pb. contamination',
-                   'TESS contamination', 'Impact parameter', 'Stellar density [g/cm$^3$]']
-            return _jplot([df.teff_c - df.teff_h, df.k_app, df.cref, df.ctess, df.b, df.rho], df.k_true,
+                       'TESS contamination', 'Impact parameter', 'Stellar density [g/cm$^3$]']
+            return _jplot([df.teff_c - df.teff_h, df.k_app, df.cnt_ref, df.cnt_tess, df.b, df.rho], df.k_true,
                           xlabels, 'True radius ratio', figsize, nb, gs, **kwargs)
         else:
             xlabels = ['$\Delta$ T$_\mathrm{Eff}$ [K]', 'Apparent radius ratio',
