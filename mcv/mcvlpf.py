@@ -233,10 +233,10 @@ class MCVLPF(BaseTGCLPF):
         if derived_parameters:
             df['a'] = as_from_rhop(df.rho.values, df.p.values)
             df['inc'] = i_from_baew(df.b.values, df.a.values, 0., 0.)
-            df['t14'] = d_from_pkaiews(df.p.values, df.k_true.values, df.a.values, df.inc.values, 0., 0., 1)
             df['k_true'] = sqrt(df.k2_true)
             df['k2_app'] = df.k2_true * (1 - df.cnt_ref)
             df['k_app'] = sqrt(df.k2_app)
+            df['t14'] = d_from_pkaiews(df.p.values, df.k_true.values, df.a.values, df.inc.values, 0., 0., 1)
         return df
 
     def plot_folded_tess_transit(self, solution: str = 'de', pv: ndarray = None, binwidth: float = 1,
