@@ -25,15 +25,15 @@ import etta
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp
 from numpy import arange, zeros, concatenate, sqrt, ndarray, inf, atleast_2d, sum, median, where, floor, squeeze, \
-    argsort, isnan, repeat
-from numpy.random import uniform
+    argsort, isnan, repeat, array, unique, ceil, percentile, poly1d, newaxis
+from numpy.random import uniform, permutation
 from pytransit import sdss_g, sdss_r, sdss_i, sdss_z, RoadRunnerModel
 from pytransit.contamination import Instrument, SMContamination
 from pytransit.lpf.cntlpf import contaminate, PhysContLPF
 from pytransit.lpf.loglikelihood import WNLogLikelihood, CeleriteLogLikelihood
 from pytransit.lpf.tess.tgclpf import BaseTGCLPF
 from pytransit.lpf.tesslpf import downsample_time
-from pytransit.orbits import as_from_rhop, i_from_ba, i_from_baew, d_from_pkaiews
+from pytransit.orbits import as_from_rhop, i_from_ba, i_from_baew, d_from_pkaiews, epoch
 from pytransit.param import PParameter, GParameter, UniformPrior as UP, NormalPrior as NP
 from pytransit.utils.misc import fold
 from uncertainties import ufloat
@@ -77,7 +77,8 @@ class Star:
 
 class MCVLPF(BaseTGCLPF):
     def __init__(self, toi: float, star: Optional[Star] = None,
-                 zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None,
+                 zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None, model_ttvs: bool = False,
+                 absolute_contamination: bool = False,
                  use_gp: bool = True, use_ldtk: bool = True, use_opencl: bool = False):
 
         self.name = f"TOI-{toi}"
@@ -86,6 +87,8 @@ class MCVLPF(BaseTGCLPF):
         self.period = period or self.toi.period
         self.star = star or Star.from_toi(self.toi)
 
+        self.absolute_contamination: bool = absolute_contamination
+        self.model_ttvs: bool = model_ttvs
         self.use_gp: bool = use_gp
         self.use_opencl: bool = use_opencl
         self.use_ldtk: bool = use_ldtk
@@ -105,11 +108,33 @@ class MCVLPF(BaseTGCLPF):
         wnids = arange(len(data.time))
         tref = floor(concatenate(data.time).min())
 
+        if self.model_ttvs:
+            epochs = array([epoch(t, self.zero_epoch.n, self.period.n)[0] for t in data.time])
+            unique_epochs = [epochs[0]]
+            epids = [0]
+            epid = 0
+            ec = epochs[0]
+            for ep in epochs[1:]:
+                if ec != ep:
+                    unique_epochs.append(ep)
+                    epid += 1
+                    ec = ep
+                epids.append(epid)
+            self.nep = epid + 1
+            self.epochs = array(unique_epochs)
+        else:
+            self.epochs = zeros(1, int)
+            self.nep = 1
+            epids = zeros(len(data.time), int)
+
         self.wns = data.noise
         tm = RoadRunnerModel('power-2-pm', small_planet_limit=0.005, parallel=True)
         PhysContLPF.__init__(self, self.name, passbands=pbnames, times=data.time, fluxes=data.flux, pbids=pbids, wnids=wnids,
                              covariates=data.covariates, tref=tref, tm=tm, nsamples=self.data.nsamples, exptimes=self.data.exptime,
                              result_dir=Path('.'))
+
+        if self.model_ttvs:
+            self.tm.epids = array(epids)
 
         if self.use_ldtk:
             self.set_ldtk_priors()
@@ -144,12 +169,30 @@ class MCVLPF(BaseTGCLPF):
         self.instrument = Instrument('example', [sdss_g, sdss_r, sdss_i, sdss_z])
         self.cm = SMContamination(self.instrument, "i'")
 
+    def _init_p_orbit(self):
+        """Orbit parameter initialisation.
+        """
+        porbit = [
+            GParameter('p', 'period', 'd', NP(1.0, 1e-5), (0, inf)),
+            GParameter('rho', 'stellar_density', 'g/cm^3', UP(0.1, 25.0), (0, inf)),
+            GParameter('b', 'impact_parameter', 'R_s', UP(0.0, 1.0), (0, 1))]
+        self.ps.add_global_block('orbit', porbit)
+
+        if self.model_ttvs:
+            ptc = [GParameter(f'tc_{i}', f'transit_center_{i}', '-', NP(0.0, 0.1), (-inf, inf)) for i in range(self.nep)]
+        else:
+            ptc = [GParameter('tc', 'transit_center', '-', NP(0.0, 0.1), (-inf, inf))]
+
+        self.ps.add_global_block('tc', ptc)
+        self._start_tc = self.ps.blocks[-1].start
+        self._sl_tc = self.ps.blocks[-1].slice
+
     def _init_p_planet(self):
         ps = self.ps
         pk2 = [PParameter('k2_true', 'apparent_area_ratio', 'A_s', UP(0.01**2, 0.30**2), (0., inf))]
         pcn = [GParameter('cnt_ref', 'reference_passband_contamination', '', UP(0.0, 1.0), bounds=(0.0, 1.0)),
-               GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
-               GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+               GParameter('teff_h', 'host_teff', 'K', UP(1200, 7000), bounds=(1200, 7000)),
+               GParameter('teff_c', 'contaminant_teff', 'K', UP(1200, 7000), bounds=(1200, 7000)),
                GParameter('cnt_tess', 'tess_acontamination', '', UP(0.0, 1.), (0.0, 1.0))]
         ps.add_passband_block('k2', 1, 1, pk2)
         self._pid_k2 = repeat(ps.blocks[-1].start, self.npb)
@@ -157,6 +200,7 @@ class MCVLPF(BaseTGCLPF):
         self._sl_k2 = ps.blocks[-1].slice
         ps.add_global_block('contamination', pcn)
         self._pid_cn = arange(ps.blocks[-1].start, ps.blocks[-1].stop)
+        self._start_cn = ps.blocks[-1].start
         self._sl_cn = ps.blocks[-1].slice
 
     def _init_lnlikelihood(self):
@@ -169,25 +213,35 @@ class MCVLPF(BaseTGCLPF):
     def _post_initialisation(self):
         if self.use_opencl:
             self.tm = self.tm.to_opencl()
-        self.set_prior('tc', 'NP', self.zero_epoch.n, 2*self.zero_epoch.s)
+        if self.model_ttvs:
+            for i in range(self.nep):
+                tc = self.zero_epoch + self.epochs[i]*self.period
+                self.set_prior(f'tc_{i}', 'NP', tc.n, 5*tc.s)
+        else:
+            self.set_prior('tc', 'NP', self.zero_epoch.n, 2*self.zero_epoch.s)
         self.set_prior('p', 'NP', self.period.n, 2*self.period.s)
         self.set_prior('rho', 'UP', 1, 35)
         self.set_prior('k2_true', 'UP', round(0.5*self.toi.depth.n*1e-6, 5), round(1.5*self.toi.depth.n*1e-6, 5))
         self.set_prior('teff_h', 'NP', self.star.teff.n, self.star.teff.s)
-        self.set_prior('teff_c', 'UP', 2500, 12000)
+        self.set_prior('teff_c', 'UP', 1200, 7000)
+        if self.absolute_contamination:
+            self.set_prior('cnt_ref', 'NP', 0.5, 1e-5)
 
     def optimize_global(self, niter: int = 200, npop: int = 100, population = None):
-        p = self.ps[6].prior
-        self.set_prior('cnt_ref', 'NP', 0.03, 0.0025)
+        if not self.absolute_contamination:
+            p = self.ps[self._start_cn + 1].prior
+            self.set_prior('teff_c', 'NP', p.mean, p.std)
+            self.set_prior('cnt_ref', 'NP', 0.03, 0.0025)
         self.set_prior('cnt_tess', 'NP', 0.03, 0.0025)
-        self.set_prior('teff_c', 'NP', p.mean, p.std)
         super().optimize_global(niter, npop, population=population)
 
     def sample_mcmc(self, niter: int = 500, thin: int = 5, repeats: int = 1, npop: int = None,
-                    population=None, save: bool = False):
-        self.set_prior('cnt_ref', 'UP', 0.0, 1.0)
+                    population=None, save: bool = False, set_teffc_prior: bool = True):
+        if not self.absolute_contamination:
+            if set_teffc_prior:
+                self.set_prior('teff_c', 'UP', 1200.0, 7000.0)
+            self.set_prior('cnt_ref', 'UP', 0.0, 1.0)
         self.set_prior('cnt_tess', 'UP', 0.0, 1.0)
-        self.set_prior('teff_c', 'UP', 2500.0, 12000.0)
         self.set_prior('k2_true', 'UP', 0.01 ** 2, 1.0)
         super().sample_mcmc(niter, thin, repeats, npop=npop, population=population, save=save)
 
@@ -204,9 +258,11 @@ class MCVLPF(BaseTGCLPF):
 
     def create_pv_population(self, npv: int = 50) -> ndarray:
         pvp = self.ps.sample_from_prior(npv)
-        pvp[:, 5] = uniform(0.0, 0.1, size=npv)
-        pvp[:, 8] = uniform(0.0, 0.1, size=npv)
-        pvp[:, 7] = pvp[:, 6]
+        icn = self._start_cn
+        if not self.absolute_contamination:
+            pvp[:, icn] = uniform(0.0, 0.1, size=npv)
+            pvp[:, icn + 2] = pvp[:, icn + 1]
+        pvp[:, icn+3] = uniform(0.0, 0.1, size=npv)
         for p in self.ps[self._sl_lm]:
             if 'lm_i' in p.name:
                 pvp[:, p.pid] = 0.01 * (pvp[:, p.pid] - 1.0) + 1.0
@@ -217,15 +273,22 @@ class MCVLPF(BaseTGCLPF):
     def transit_model(self, pvp):
         pvp = atleast_2d(pvp)
         cnt = zeros((pvp.shape[0], self.npb))
-        zero_epoch = pvp[:,0] - self._tref
-        period = pvp[:,1]
-        smaxis = as_from_rhop(pvp[:, 2], period)
-        inclination  = i_from_ba(pvp[:, 3], smaxis)
-        radius_ratio = sqrt(pvp[:,4:5])
+        zero_epoch = pvp[:,self._sl_tc] - self._tref
+        period = pvp[:,0]
+        smaxis = as_from_rhop(pvp[:, 1], period)
+        inclination  = i_from_ba(pvp[:, 2], smaxis)
+        radius_ratio = sqrt(pvp[:,self._sl_k2])
         ldc = pvp[:, self._sl_ld].reshape([-1, self.npb, 2])
         flux = self.tm.evaluate(radius_ratio, ldc, zero_epoch, period, smaxis, inclination)
-        cnt[:, 0] = pvp[:, 8]
-        cnt[:, 1:] = self.cm.contamination(pvp[:, 5], pvp[:, 6], pvp[:, 7])
+        icn = self._start_cn
+        teff_h = pvp[:, icn+1]
+        teff_c = pvp[:, icn+2]
+        cnt[:, 0] = pvp[:, icn+3]
+        cnt[:, 1:] = self.cm.contamination(pvp[:, icn], teff_h, teff_c, absolute=self.absolute_contamination)
+        if self.absolute_contamination:
+            radius_p = poly1d([3.02018381e-04, -5.96908377e-01])
+            area_ratio = (radius_p(teff_c) / radius_p(teff_h)) ** 2
+            cnt[:, 1:] *= area_ratio[:,newaxis]
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True):
@@ -277,6 +340,86 @@ class MCVLPF(BaseTGCLPF):
         if plot_model:
             ax.plot(phase, fm[sids], 'k')
         setp(ax, ylim=ylim, xlim=xlim, xlabel='Time - T$_c$ [h]', ylabel='Normalised flux')
+
+        if fig is not None:
+            fig.tight_layout()
+        return fig
+
+    def plot_gb_transits(self, solution: str = 'de', pv: ndarray = None, figsize: tuple = None, axes=None,
+                         ncol: int = 4,
+                         xlim: tuple = None, ylim: tuple = None, remove_baseline: bool = True, n_samples: int = 1500):
+
+        solution = solution.lower()
+        samples = None
+
+        if pv is None:
+            if solution == 'local':
+                pv = self._local_minimization.x
+            elif solution in ('de', 'global'):
+                solution = 'global'
+                pv = self.de.minimum_location
+            elif solution in ('mcmc', 'mc'):
+                solution = 'mcmc'
+                samples = self.posterior_samples(derived_parameters=False)
+                samples = permutation(samples.values)[:n_samples]
+                pv = median(samples, 0)
+            else:
+                raise NotImplementedError("'solution' should be either 'local', 'global', or 'mcmc'")
+
+        nlc = self.nlc - self._stess
+        nrow = int(ceil(nlc / ncol))
+
+        if axes is None:
+            fig, axs = subplots(nrow, ncol, figsize=figsize, sharex='all', sharey='all', squeeze=False)
+        else:
+            fig, axs = None, axes
+
+        [ax.autoscale(enable=True, axis='x', tight=True) for ax in axs.flat]
+
+        if remove_baseline:
+            if solution == 'mcmc':
+                fbasel = median(self.baseline(samples), axis=0)
+                fmodel, fmodm, fmodp = percentile(self.transit_model(samples), [50, 0.5, 99.5], axis=0)
+            else:
+                fbasel = squeeze(self.baseline(pv))
+                fmodel, fmodm, fmodp = squeeze(self.transit_model(pv)), None, None
+            fobs = self.ofluxa / fbasel
+        else:
+            if solution == 'mcmc':
+                fbasel = median(self.baseline(samples), axis=0)
+                fmodel, fmodm, fmodp = percentile(self.flux_model(samples), [50, 1, 99], axis=0)
+            else:
+                fbasel = squeeze(self.baseline(pv))
+                fmodel, fmodm, fmodp = squeeze(self.flux_model(pv)), None, None
+            fobs = self.ofluxa
+
+        etess = self._stess
+
+        for i in range(nlc):
+            ax = axs.flat[i]
+            sl = self.lcslices[etess + i]
+            t = self.times[etess + i]
+            if self.model_ttvs:
+                e = self.epochs[self.tm.epids[etess + i]]
+                tc = pv[self._start_tc + self.tm.epids[etess + i]]
+            else:
+                t0, p = pv[[self._start_tc, 0]]
+                e = epoch(t.mean(), t0, p)
+                tc = t0 + e * p
+
+            tt = 24 * (t - tc)
+            ax.plot(tt, fobs[sl], 'k.', alpha=0.2)
+            ax.plot(tt, fmodel[sl], 'k')
+
+            if solution == 'mcmc':
+                ax.fill_between(tt, fmodm[sl], fmodp[sl], zorder=-100, alpha=0.2, fc='k')
+
+            if not remove_baseline:
+                ax.plot(tt, fbasel[sl], 'k--', alpha=0.2)
+
+        setp(axs, xlim=xlim, ylim=ylim)
+        setp(axs[-1, :], xlabel='Time - T$_c$ [h]')
+        setp(axs[:, 0], ylabel='Normalised flux')
 
         if fig is not None:
             fig.tight_layout()
