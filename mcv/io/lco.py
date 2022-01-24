@@ -4,10 +4,15 @@ from numpy import diff, sqrt, sum
 
 from .photometry import Photometry
 
-def read_lco(fname: Path, passband: str, instrument: str,
+def read_lco(fname: Path, passband: str, instrument: str, delimiter: str = 'whitespace',
              time_col: str = 'BJD_TDB', flux_col: str = 'rel_flux_T1',
              cov_cols: str = 'AIRMASS FWHM_Mean X(IJ)_T1 Y(IJ)_T1'):
-    df = read_csv(fname, delim_whitespace=True)
+
+    if delimiter == 'whitespace':
+        df = read_csv(fname, delim_whitespace=True)
+    else:
+        df = read_csv(fname, delimiter=delimiter)
+
     time = [df[time_col].values.copy()]
     flux = [df[flux_col].values.copy()]
     cov = [df[cov_cols.split()].values.copy()]
