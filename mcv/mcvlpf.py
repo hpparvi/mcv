@@ -32,10 +32,9 @@ from pytransit.contamination import Instrument, SMContamination
 from pytransit.lpf.cntlpf import contaminate, PhysContLPF
 from pytransit.lpf.loglikelihood import WNLogLikelihood, CeleriteLogLikelihood
 from pytransit.lpf.tess.tgclpf import BaseTGCLPF
-from pytransit.lpf.tesslpf import downsample_time
-from pytransit.orbits import as_from_rhop, i_from_ba, i_from_baew, d_from_pkaiews, epoch
+from pytransit.orbits import as_from_rhop, i_from_ba, i_from_baew, d_from_pkaiews, epoch, fold
 from pytransit.param import PParameter, GParameter, UniformPrior as UP, NormalPrior as NP
-from pytransit.utils.misc import fold
+from pytransit.utils import downsample_time_1d
 from uncertainties import ufloat
 
 from .io import Photometry, read_tess, read_m2, read_lco, read_m3
@@ -298,7 +297,7 @@ class MCVLPF(BaseTGCLPF):
             df['t14'] = d_from_pkaiews(df.p.values, df.k_true.values, df.a.values, df.inc.values, 0., 0., 1)
         return df
 
-    def plot_folded_tess_transit(self, solution: str = 'de', pv: ndarray = None, binwidth: float = 1,
+    def plot_folded_tess_transit(self, solution: str = 'de', pv: ndarray = None, binwidth: float = 1.0,
                                  plot_model: bool = True, plot_unbinned: bool = True, plot_binned: bool = True,
                                  xlim: tuple = None, ylim: tuple = None, ax=None, figsize: tuple = None):
 
@@ -325,10 +324,15 @@ class MCVLPF(BaseTGCLPF):
         fm = squeeze(self.transit_model(pv))[:etess]
         bl = squeeze(self.baseline(pv))[:etess]
 
-        phase = 24 * pv[1] * (fold(t, pv[1], pv[0], 0.5) - 0.5)
+        if self.model_ttvs:
+            phase = None
+        else:
+            t0, p = pv[self._sl_tc][0], pv[0]
+            phase = 24 * fold(t, p, t0)
+
         sids = argsort(phase)
         phase = phase[sids]
-        bp, bf, be = downsample_time(phase, (fo / bl)[sids], binwidth / 60)
+        bp, bf, be = downsample_time_1d(phase, (fo / bl)[sids], binwidth / 60)
         if plot_unbinned:
             ax.plot(phase, (fo / bl)[sids], 'k.', alpha=1, ms=2)
         if plot_binned:
