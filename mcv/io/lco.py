@@ -1,10 +1,12 @@
 from pathlib import Path
+from typing import Union
+
 from pandas import read_csv
 from numpy import diff, sqrt, sum
 
 from .photometry import Photometry
 
-def read_lco(fname: Path, passband: str, instrument: str, delimiter: str = 'whitespace',
+def read_lco(fname: Union[Path, str], passband: str, instrument: str, delimiter: str = 'whitespace',
              time_col: str = 'BJD_TDB', flux_col: str = 'rel_flux_T1',
              cov_cols: str = 'AIRMASS FWHM_Mean X(IJ)_T1 Y(IJ)_T1'):
 

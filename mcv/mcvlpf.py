@@ -16,7 +16,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Union
 from collections import namedtuple
 
 import pandas as pd
@@ -139,9 +139,7 @@ class MCVLPF(BaseTGCLPF):
         if self.use_ldtk:
             self.set_ldtk_priors()
 
-    def read_tess(self, datadir: Optional[Path] = None, split_transits: bool = False, use_pdc: bool = True):
-        if not datadir:
-            datadir = Path('photometry/tess')
+    def read_tess(self, datadir: Union[Path, str] = Path('photometry/tess'), split_transits: bool = False, use_pdc: bool = True):
         dtess = read_tess(self.toi.tic, datadir, split_transits=split_transits, use_pdc=use_pdc,
                           zero_epoch=self.zero_epoch.n, period=self.period.n, depth=self.toi.depth.n*1e-6,
                           transit_duration=self.toi.duration.n/24, baseline_duration=4*self.toi.duration.n/24)
@@ -149,19 +147,17 @@ class MCVLPF(BaseTGCLPF):
         self._ntess = sum([t.size for t in dtess.time])
         self.data += dtess
 
-    def read_m2(self, datadir: Optional[Path] = None, heavy_baseline: bool = False,
+    def read_m2(self, datadir: Union[Path, str] = Path('photometry/m2'), heavy_baseline: bool = False,
                 downsample: Optional[float] = None, passbands: Iterable = ('g', 'r', 'i', 'z_s')):
-        if not datadir:
-            datadir = Path('photometry/m2')
         files = sorted(datadir.glob('*.fits'))
+        if not files:
+            raise ValueError(f'Could not find any M2 *.fits light curve files from {datadir}.')
         self.data += read_m2(files, downsample=downsample, passbands=passbands, heavy_baseline=heavy_baseline)
 
-    def read_m3(self, datadir: Optional[Path] = None, heavy_baseline: bool = False):
-        if not datadir:
-            datadir = Path('photometry/lco')
+    def read_m3(self, datadir: Union[Path, str] = Path('photometry/lco'), heavy_baseline: bool = False):
         self.data += read_m3(datadir, heavy_baseline=heavy_baseline)
 
-    def read_lco_file(self, fname: Path, passband: str, instrument: str):
+    def read_lco_file(self, fname: Union[Path, str], passband: str, instrument: str):
         self.data += read_lco(fname, passband, instrument)
 
     def _init_instrument(self):
