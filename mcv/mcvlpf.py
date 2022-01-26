@@ -103,7 +103,9 @@ class MCVLPF(BaseTGCLPF):
         data.covariates = [(c-c.mean(0)) / c.std(0) for c in data.covariates]
         pbnames = 'tess g r i z_s'.split()
 
-        pbids = pd.Categorical(data.passband, categories=pbnames).codes
+        pbs = pd.Categorical(data.passband, categories=pbnames).remove_unused_categories()
+        pbnames = pbs.categories.values
+        pbids = pbs.codes
         wnids = arange(len(data.time))
         tref = floor(concatenate(data.time).min())
 
@@ -153,16 +155,20 @@ class MCVLPF(BaseTGCLPF):
             raise ValueError(f'Could not find any M2 *.fits light curve files from {datadir}.')
         self.data += read_m2(files, downsample=downsample, passbands=passbands, heavy_baseline=heavy_baseline)
 
-    def read_m3(self, datadir: Union[Path, str] = Path('photometry/lco'), heavy_baseline: bool = False):
-        self.data += read_m3(datadir, heavy_baseline=heavy_baseline)
+    def read_m3(self, datadir: Union[Path, str] = Path('photometry/lco'), heavy_baseline: bool = False, downsample: Optional[float] = None):
+        self.data += read_m3(datadir, heavy_baseline=heavy_baseline, downsample=downsample)
 
     def read_lco_file(self, fname: Union[Path, str], passband: str, instrument: str):
         self.data += read_lco(fname, passband, instrument)
 
     def _init_instrument(self):
         """Set up the instrument and contamination model."""
-        self.instrument = Instrument('example', [sdss_g, sdss_r, sdss_i, sdss_z])
-        self.cm = SMContamination(self.instrument, "i'")
+        filters = sdss_g, sdss_r, sdss_i, sdss_z
+        for f, pbn in zip(filters, 'g r i z_s'.split()):
+            f.name = pbn
+        filters = [f for f in filters if f.name in self.passbands]
+        self.instrument = Instrument('M2', filters)
+        self.cm = SMContamination(self.instrument, filters[-1].name)
 
     def _init_p_orbit(self):
         """Orbit parameter initialisation.
@@ -222,23 +228,24 @@ class MCVLPF(BaseTGCLPF):
         if self.absolute_contamination:
             self.set_prior('cnt_ref', 'NP', 0.5, 1e-5)
 
-    def optimize_global(self, niter: int = 200, npop: int = 100, population = None):
+    def optimize_global(self, niter: int = 200, npop: int = 100, population = None, pool = None, lnpost = None):
         if not self.absolute_contamination:
             p = self.ps[self._start_cn + 1].prior
             self.set_prior('teff_c', 'NP', p.mean, p.std)
             self.set_prior('cnt_ref', 'NP', 0.03, 0.0025)
         self.set_prior('cnt_tess', 'NP', 0.03, 0.0025)
-        super().optimize_global(niter, npop, population=population)
+        super().optimize_global(niter, npop, population=population, pool=pool, lnpost=lnpost, vectorize=(pool is None))
 
     def sample_mcmc(self, niter: int = 500, thin: int = 5, repeats: int = 1, npop: int = None,
-                    population=None, save: bool = False, set_teffc_prior: bool = True):
+                    population=None, save: bool = False, set_teffc_prior: bool = True, pool = None, lnpost = None):
         if not self.absolute_contamination:
             if set_teffc_prior:
                 self.set_prior('teff_c', 'UP', 1200.0, 7000.0)
             self.set_prior('cnt_ref', 'UP', 0.0, 1.0)
         self.set_prior('cnt_tess', 'UP', 0.0, 1.0)
         self.set_prior('k2_true', 'UP', 0.01 ** 2, 1.0)
-        super().sample_mcmc(niter, thin, repeats, npop=npop, population=population, save=save)
+        super().sample_mcmc(niter, thin, repeats, npop=npop, population=population, save=save,
+                            pool=pool, lnpost=lnpost, vectorize=(pool is None))
 
     def set_ldtk_priors(self):
         from ldtk import tess, sdss_g, sdss_r, sdss_i, sdss_z
@@ -284,7 +291,7 @@ class MCVLPF(BaseTGCLPF):
             radius_p = poly1d([3.02018381e-04, -5.96908377e-01])
             area_ratio = (radius_p(teff_c) / radius_p(teff_h)) ** 2
             cnt[:, 1:] *= area_ratio[:,newaxis]
-        return contaminate(flux, cnt, self.lcids, self.pbids)
+        return squeeze(contaminate(flux, cnt, self.lcids, self.pbids))
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True):
         df = super().posterior_samples(burn, thin, False)
