@@ -5,7 +5,7 @@ from typing import Union, Optional, List
 from astropy.io.fits import getval
 from astropy.stats import mad_std
 from astropy.table import Table
-from numpy import nanmedian, zeros, arange, array, diff, concatenate, sqrt, ones, inf, median
+from numpy import nanmedian, zeros, arange, array, diff, concatenate, sqrt, ones, inf, median, isfinite
 from pytransit.orbits import fold
 from pytransit.utils.keplerlc import KeplerLC
 from uncertainties import nominal_value
@@ -37,7 +37,7 @@ def get_tess_files(d: Path):
 
 def read_qlp(f: Path, use_pdc: bool = True):
     tb = Table.read(f)
-    m = tb['QUALITY'] == 0
+    m = (tb['QUALITY'] == 0) & isfinite(tb['TIME'])
     time = tb['TIME'].data[m] + tb.meta['BJDREFI']
     flux = tb['KSPSAP_FLUX'].data[m].astype('d') if use_pdc else tb['SAP_FLUX'].data[m].astype('d')
     return time, flux / median(flux), tb.meta['TIMEDEL']
@@ -45,7 +45,7 @@ def read_qlp(f: Path, use_pdc: bool = True):
 
 def read_tess_spoc(f: Path, use_pdc: bool = True):
     tb = Table.read(f)
-    m = tb['QUALITY'] == 0
+    m = (tb['QUALITY'] == 0) & isfinite(tb['TIME'])
     time = array(tb['TIME'].data[m] + tb.meta['BJDREFI'])
     flux = array(tb['PDCSAP_FLUX'].data[m].astype('d') if use_pdc else tb['SAP_FLUX'].data[m].astype('d'))
     flux /= median(flux)
@@ -57,7 +57,7 @@ def read_tess_spoc(f: Path, use_pdc: bool = True):
 
 def read_spoc(f: Path, use_pdc: bool = True):
     tb = Table.read(f)
-    m = tb['QUALITY'] == 0
+    m = (tb['QUALITY'] == 0) & isfinite(tb['TIME'])
     time = array(tb['TIME'].data[m] + tb.meta['BJDREFI'])
     flux = array(tb['PDCSAP_FLUX'].data[m].astype('d') if use_pdc else tb['SAP_FLUX'].data[m].astype('d'))
     flux /= median(flux)
